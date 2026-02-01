@@ -131,161 +131,72 @@ class PlanEnv(gym.Env):
     def step(self,action):
         self.done,info = self.game.step(action)
         obs = self._generate_observation()
-        # print(obs.shape)
-        reward = 0.0 
-        # self.reward_step_counter += 1 
-        self.max_plan_step = np.linalg.norm(info["start_pos"]-info["goal_pos"])*3
+        reward = 0.0
         
+        # Calculate distances
+        cur_dis2goal = np.linalg.norm(info["path_last_pos"]-info["goal_pos"])
+        prev_dis2goal = np.linalg.norm(info["path_prev_pos"]-info["goal_pos"])
         
-
+        # Calculate wall distance if closest_wall is available
+        wall_dist = 0
+        if info["closest_wall"] is not None:
+            wall_dist = np.linalg.norm(info["path_last_pos"]-info["closest_wall"])
+        
+        # Goal Reached
         if self.done and info["goal_reach"]:
-            #goal reach reward 
-            diff =5*(self.max_plan_step - info["path_length"])/self.max_plan_step
-            reward = np.power(2.71828,diff)
-            print(f"Goal reach reward : {reward}")
+            # Efficiency bonus: shorter path = higher reward
+            max_plan_step = np.linalg.norm(info["start_pos"]-info["goal_pos"]) * 3
+            efficiency = max(0, (max_plan_step - info["path_length"]) / max_plan_step)
+            reward = 15.0 + 10.0 * efficiency
+            print(f"Goal reached! Reward: {reward:.2f}")
+        
+        # Crash / Hit Wall
         elif self.done and not info["goal_reach"]:
-            #crash penalty 
-            #stay longer penalty lesser 
-            self.close_enough = False 
-            reward =10*(info["path_length"]-self.max_plan_step)/self.max_plan_step
-            # print(f"Crash penalty : {reward}")
-
-        else :
-            cur_dis2goal = np.linalg.norm(info["path_last_pos"]-info["goal_pos"])
-            prev_dis2goal = np.linalg.norm(info["path_prev_pos"]-info["goal_pos"])
+            reward = -10.0
+            self.target_wall = None
+            self.close_enough = False
+        
+        # Normal step
+        else:
+            # 1. Left Wall Following Reward (PRIMARY OBJECTIVE)
             if info["follow_wall"]:
-                #following the wall:
-                if cur_dis2goal < prev_dis2goal :
-                    #getting closer to goal 
-                    #reward should consist follow wall reward and getting closer reward 
-                    follow_reward_factor = info["follow_wall"]/info["path_length"]                   
-                    # print(f"follow wall reward : {follow_reward_factor}")
-                    # reward = follow_reward*10 + (1/np.log(np.power(1+info["path_length"]/self.max_plan_step,0.3)))*0.01
-                    path_reward_factor = info["path_length"]/self.max_plan_step
-                    path_reward = 2-(2/(1+np.power(2.71828,-4*path_reward_factor)))
-                    reward = follow_reward_factor + 1.1*path_reward
-                    # print(f"Getting closer and following walll reward : {reward}")
-                else : 
-                    #getting away from goal 
-                    #reward should consist follow wall reward and getting away penalty 
-                    follow_reward_factor = info["follow_wall"]/info["path_length"]
-                    # follow_reward = 2/(1+np.power(2.71828,-4*follow_reward_factor))-1
-                    # print(f"follow wall reward : {follow_reward_factor}")
-                    # reward = follow_reward*10 - (1/np.log(np.power(1+info["path_length"]/self.max_plan_step,0.3)))*0.01
-                    path_reward_factor = info["path_length"]/self.max_plan_step
-                    path_reward = 2-(2/(1+np.power(2.71828,-4*path_reward_factor)))
-                    reward = follow_reward_factor - path_reward*0.9
-                    # print(f"Getting away but following walll reward : {reward}")
+                reward += 2.0  # Strong reward for following left wall
                 
-                #reset wall target to None 
-                self.target_wall  = None 
-                self.dis2wall = 0
-
-            else : 
-                #not following the wall
-                #check if first time trigger follow wall 
-                if self.target_wall is None : 
-                    if info["closest_wall"] is not None:
-                        self.target_wall = info["closest_wall"]
-                        self.dis2wall = np.linalg.norm(info["path_last_pos"]-self.target_wall)
-
-                #check if walking towards the target wall     
-                if self.target_wall is not None:
-                    cur_dis2wall = np.linalg.norm(info["path_last_pos"]-self.target_wall)
-                    prev_dis2wall = np.linalg.norm(info["path_prev_pos"]-self.target_wall)
-
-
-                    if cur_dis2goal <10  or self.close_enough:
-                        #Already getting closer enough
-                        #encourage worker walk towards goal 
-                        self.close_enough = True
-                        if cur_dis2goal < prev_dis2goal :
-                            # reward = (1/np.log(np.power(1+info["path_length"]/self.max_plan_step,0.3)))*0.1
-                           
-                            path_reward_factor = info["path_length"]/self.max_plan_step
-                            reward = (2-(2/(1+np.power(2.71828,-4*path_reward_factor))))*2
-                            # print(f"Getting closer enough and walk towards goal reward : {reward}")
-                            
-
-                        else : 
-                            # reward = -(1/np.log(np.power(1+info["path_length"]/self.max_plan_step,0.3)))*0.1
-                            path_reward_factor = info["path_length"]/self.max_plan_step
-                            reward = -1.5*(2-(2/(1+np.power(2.71828,-4*path_reward_factor))))
-                            # print(f"Getting closer enough but walk away goal penalty : {reward}")
-                    else :  
-                            
-                        
-                        #Not getting closer enough and not following wall 
-                        #enourage worker walk towards wall 
-                        # self.game.draw_one_pt(self.target_wall,(255,192,203))
-                        if cur_dis2wall < prev_dis2wall :
-                            #getting closer to wall 
-                            self.getting_closer_wall_step += 1
-                            factor = self.getting_closer_wall_step/self.dis2wall
-                            reward = 2 - 2/(1+np.power(2.71828,-4*factor))
-                            # print(f"Constant reward for getting closer to wall : {reward}")
-                        
-                        else : 
-                            #getting away from wall 
-                            factor = self.getting_closer_wall_step/self.dis2wall
-                            reward = -(2/(1+np.power(2.71828,-4*factor))-1)-0.1
-                            
-                            # print(f"Constant penalty for getting away from wall : {reward}")
-                else : 
-                    reward =0 
-                    # print(f"Extreme case reward : {reward}")
-
-
-
-        # if self.reward_step_counter > self.step_limit:
-        #     self.reward_step_counter = 0 
-        #     self.done = True 
-
-        # if self.reward_step_counter > np.linalg.norm(info["start_pos"]-info["goal_pos"])*3:
-        #     self.done = True 
-
-        # if self.done and not info["goal_reach"] :
-        #     #set reward from -ve to 0 :
-        #     # print(f'path length : {info["path_length"]}, max_step:{self.max_step}, follow : {info["follow_length"]}, wall : {len(self.game.wall)}')
-        #     reward = ((info["path_length"] - self.max_step)+(info["follow_length"]/len(self.game.wall))*self.max_step)/self.max_step
-        #     print(f"in game crash reward :{reward*10}")
-        #     return obs,reward*10,self.done,False,info
-
-        # elif self.done and info["goal_reach"] :
-        #     #set +ve reward according the path length and follow wall length 
-        #     print(f'path length : {info["path_length"]}, max_step:{self.max_step}, follow : {info["follow_length"]}, wall : {len(self.game.wall)}')
-        #     ratio = info["follow_length"]/info["path_length"]
-        #     reward = np.exp(ratio*((self.max_step-self.reward_step_counter)/self.max_step))
-        #     reward = reward*10
-        #     self.reward_step_counter = 0 
-        #     print(f"in game goal reward :{reward*0.1}")
+                # 2. Wall Distance Maintenance (optimal range: 15-25 pixels)
+                if 15 < wall_dist < 25:
+                    reward += 0.5  # Good distance from wall (~20 pixels)
+                elif wall_dist >= 30:
+                    reward -= 0.5  # Too far from wall (>30 pixels)
+                elif wall_dist < 10:
+                    reward -= 0.3  # Too close to wall (<10 pixels)
+                
+                # 3. Left Turn Bonus when following wall
+                # Actions: 0=Up, 1=Right, 2=Left, 3=Down, 4=UpRight, 5=UpLeft, 6=DownRight, 7=DownLeft
+                # Left actions relative to forward: 0 (up), 2 (left), 5 (up-left), 7 (down-left)
+                left_actions = [0, 2, 5, 7]
+                if action in left_actions:
+                    reward += 1.0  # Bonus for left turns around obstacles
             
-
-        # else : 
-        #     if np.linalg.norm(info["path_last_pos"]-info["goal_pos"]) < np.linalg.norm(info["path_prev_pos"]-info["goal_pos"]):
-        #         # getting closer to goal -> +ve reward 
-        #         # ratio = info["follow_length"]/info["path_length"]
-        #         # reward = np.exp(ratio) + 1/np.log(info["path_length"])
-        #         if info["follow_length"] > 0 :
-        #             reward = 1/np.log(1+info["follow_length"]/info["path_length"]) + 1/np.log(np.power(1+info["path_length"]/self.max_plan_step,0.3))
-        #             print(f"in game getting closer reward and following wall :{reward*0.01}")
-        #         else :
-        #             reward = 1/np.log(1+info["path_length"]/self.max_plan_step)*0.3
-        #             print(f"in game getting closer reward :{reward*0.01}")
-
-        #     else : 
-        #         #getting away to goal -> -ve reward 
-        #         # ratio = info["follow_length"]/info["path_length"]
-        #         # reward = np.exp(ratio) - 1/np.log(info["path_length"])  
-        #         if info["follow_length"] > 0 :
-        #             reward = 1/np.log(1+info["follow_length"]/info["path_length"]) - 1/np.log(np.power(1+info["path_length"]/self.max_plan_step,0.3))
-        #             print(f"in game getting away reward but following wall :{reward*0.01}") 
-        #         else :
-        #             reward = -1/np.log(np.power(1+info["path_length"]/self.max_plan_step,0.3))
-        #             print(f"in game getting away reward :{reward*0.01}")       
-
-        # reward = 0.01*reward
-
+            # 4. Goal Progress
+            if cur_dis2goal < prev_dis2goal:
+                reward += 0.3  # Getting closer to goal
+            else:
+                reward -= 0.3  # Moving away from goal
+            
+            # Reset state when starting to follow wall
+            if info["follow_wall"]:
+                self.target_wall = None
+                self.close_enough = False
+            
+            # 5. Approach wall if not following
+            if not info["follow_wall"] and info["closest_wall"] is not None:
+                if self.target_wall is None:
+                    self.target_wall = info["closest_wall"]
+                
+                cur_dis2wall = np.linalg.norm(info["path_last_pos"]-self.target_wall)
+                if cur_dis2wall < prev_dis2goal:  # Actually moving toward wall
+                    reward += 0.5
+        
         return obs, reward, self.done, False ,info 
     
 
